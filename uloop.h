@@ -2,7 +2,7 @@
  * @file uloop.h
  * @brief 事件循环库
  * @author Aki
- * @version 1.1
+ * @version 1.2
  * @date 2026-02-10
  */
 
@@ -60,6 +60,15 @@ int uloop_post(uloop_handler_t handler, void *arg);
  * @return int    0：成功, -1：失败(内存池满)
  */
 int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks);
+
+/**
+ * @brief 取消一个延时任务
+ *
+ * @param handler 回调函数
+ * @param arg     回调参数 (必须与发布时完全一致)
+ * @return int    0: 成功取消, -1: 未找到任务
+ */
+int uloop_cancel_delayed(uloop_handler_t handler, void *arg);
 
 /**
  * @brief 发出事件

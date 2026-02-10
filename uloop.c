@@ -2,7 +2,7 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.1
+ * @version 1.2
  * @date 2026-02-10
  */
 
@@ -200,6 +200,41 @@ int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks
 }
 
 /**
+ * @brief 取消一个延时任务
+ *
+ * @param handler 回调函数
+ * @param arg     回调参数
+ * @return int    0: 成功, -1: 未找到
+ */
+int uloop_cancel_delayed(uloop_handler_t handler, void *arg)
+{
+    task_node_t *node_to_free = NULL;
+    int ret = -1;
+
+    ULOOP_ENTER_CRITICAL();
+    task_node_t **curr = &s_sched.timer_head;
+    while (*curr)
+    {
+        if ((*curr)->handler == handler && (*curr)->arg == arg)
+        {
+            node_to_free = *curr;
+            *curr = node_to_free->next; // 从链表中移除
+            ret = 0;
+            break;
+        }
+        curr = &(*curr)->next;
+    }
+    ULOOP_EXIT_CRITICAL();
+
+    if (node_to_free)
+    {
+        _mem_free(node_to_free);
+    }
+
+    return ret;
+}
+
+/**
  * @brief 发出事件
  *
  * @param event_id 事件ID
@@ -212,9 +247,9 @@ void uloop_emit(uint16_t event_id, void *arg)
     {
         if (entry->event_id == event_id)
         {
-            if (uloop_post(entry->handler, arg) != 0)
+            if (entry->handler)
             {
-                // LOG_WARN("Event pool full");
+                entry->handler(arg);
             }
         }
         entry++;
