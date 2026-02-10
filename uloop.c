@@ -259,6 +259,7 @@ ULOOP_TICK_TYPE uloop_run(void)
         }
     }
 
+    // 快照
     task_node_t *task_to_run = s_sched.ready_head;
     s_sched.ready_head = NULL;
     s_sched.ready_tail = NULL;

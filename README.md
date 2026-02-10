@@ -1,7 +1,7 @@
 # uloop
 
-![version](https://img.shields.io/badge/version-1.0-brightgreen.svg)
-![build](https://img.shields.io/badge/build-2026.02.09-brightgreen.svg)
+![version](https://img.shields.io/badge/version-1.1-brightgreen.svg)
+![build](https://img.shields.io/badge/build-2026.02.10-brightgreen.svg)
 ![author](https://img.shields.io/badge/author-Aki-brightgreen.svg)
 
 嵌入式事件循环库
