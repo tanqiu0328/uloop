@@ -2,8 +2,8 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.0
- * @date 2026-02-09
+ * @version 1.1
+ * @date 2026-02-10
  */
 
 #include "uloop.h"
@@ -234,7 +234,7 @@ ULOOP_TICK_TYPE uloop_run(void)
 
     while (s_sched.timer_head)
     {
-        long diff = (long)(now - s_sched.timer_head->expiration);
+        s_tick_t diff = (s_tick_t)(now - s_sched.timer_head->expiration);
         if (diff >= 0)
         {
             task_node_t *timer_node = s_sched.timer_head;
@@ -258,56 +258,47 @@ ULOOP_TICK_TYPE uloop_run(void)
             break;
         }
     }
+
+    task_node_t *task_to_run = s_sched.ready_head;
+    s_sched.ready_head = NULL;
+    s_sched.ready_tail = NULL;
+
     ULOOP_EXIT_CRITICAL();
 
     // 执行就绪队列中的任务
-    while (1)
+    while (task_to_run)
     {
-        task_node_t *node = NULL;
+        task_node_t *curr_node = task_to_run;
+        task_to_run = curr_node->next;
 
-        ULOOP_ENTER_CRITICAL();
-        if (s_sched.ready_head)
+        if (curr_node->handler)
         {
-            node = s_sched.ready_head;
-            s_sched.ready_head = node->next;
-            if (s_sched.ready_head == NULL)
-            {
-                s_sched.ready_tail = NULL;
-            }
+            curr_node->handler(curr_node->arg);
         }
-        ULOOP_EXIT_CRITICAL();
-
-        if (node)
-        {
-            if (node->handler)
-            {
-                node->handler(node->arg);
-            }
-            _mem_free(node);
-        }
-        else
-        {
-            break;
-        }
+        _mem_free(curr_node);
     }
 
     // 计算建议休眠时间
-    ULOOP_TICK_TYPE next_wake = (ULOOP_TICK_TYPE)-1;
+    ULOOP_TICK_TYPE sleep_ticks = (ULOOP_TICK_TYPE)-1;
 
     ULOOP_ENTER_CRITICAL();
-    if (s_sched.timer_head)
+    if (s_sched.ready_head != NULL)
     {
-        long diff = (long)(s_sched.timer_head->expiration - s_sched.tick_count);
+        sleep_ticks = 0;
+    }
+    else if (s_sched.timer_head)
+    {
+        s_tick_t diff = (s_tick_t)(s_sched.timer_head->expiration - s_sched.tick_count);
         if (diff > 0)
         {
-            next_wake = (ULOOP_TICK_TYPE)diff;
+            sleep_ticks = (ULOOP_TICK_TYPE)diff;
         }
         else
         {
-            next_wake = 0;
+            sleep_ticks = 0;
         }
     }
     ULOOP_EXIT_CRITICAL();
 
-    return next_wake;
+    return sleep_ticks;
 }
