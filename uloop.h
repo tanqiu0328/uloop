@@ -2,8 +2,8 @@
  * @file uloop.h
  * @brief 事件循环库
  * @author Aki
- * @version 1.2
- * @date 2026-02-10
+ * @version 1.3
+ * @date 2026-02-25
  */
 
 #ifndef _ULOOP_H_
@@ -23,6 +23,11 @@
  * @brief 任务回调函数类型
  */
 typedef void (*uloop_handler_t)(void *arg);
+
+/**
+ * @brief 析构函数类型
+ */
+typedef void (*uloop_dtor_t)(void *arg);
 
 /**
  * @brief 初始化uloop系统
@@ -62,13 +67,13 @@ int uloop_post(uloop_handler_t handler, void *arg);
 int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks);
 
 /**
- * @brief 取消一个延时任务
+ * @brief 取消已发布的任务
  *
  * @param handler 回调函数
- * @param arg     回调参数 (必须与发布时完全一致)
- * @return int    0: 成功取消, -1: 未找到任务
+ * @param arg     回调参数
+ * @return int    成功取消的任务数量
  */
-int uloop_cancel_delayed(uloop_handler_t handler, void *arg);
+int uloop_cancel(uloop_handler_t handler, void *arg);
 
 /**
  * @brief 发出事件
@@ -77,6 +82,15 @@ int uloop_cancel_delayed(uloop_handler_t handler, void *arg);
  * @param arg      事件参数
  */
 void uloop_emit(uint16_t event_id, void *arg);
+
+/**
+ * @brief 发出受管事件
+ *
+ * @param event_id 事件ID
+ * @param arg      事件参数
+ * @param dtor     析构函数
+ */
+void uloop_emit_managed(uint16_t event_id, void *arg, uloop_dtor_t dtor);
 
 /* Linker */
 typedef struct
@@ -89,8 +103,8 @@ typedef struct
 
 /**
  * @brief 订阅事件宏
- * @param id   事件ID(uint16_t)
- * @param func 处理函数(uloop_handler_t)
+ * @param id   事件ID
+ * @param func 处理函数
  */
 #define ULOOP_ON_EVENT(id, func) \
     const uloop_event_entry_t uloop_event_##id##_##func ULOOP_SECTION = {.event_id = id, .handler = func}

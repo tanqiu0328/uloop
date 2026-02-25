@@ -2,19 +2,34 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.2
- * @date 2026-02-10
+ * @version 1.3
+ * @date 2026-02-25
  */
 
 #include "uloop.h"
 
 typedef int32_t s_tick_t;
 
+// 节点类型枚举
+typedef enum
+{
+    NODE_TYPE_TASK = 0, // 普通任务节点
+    NODE_TYPE_EVENT     // 事件分发节点
+} node_type_t;
+
 typedef struct task_node
 {
     struct task_node *next;
-    uloop_handler_t handler;
+
+    node_type_t type; // 节点类型
+    union
+    {
+        uloop_handler_t handler; // 普通任务回调
+        uint16_t event_id;       // 广播事件ID
+    } act;
+
     void *arg;
+    uloop_dtor_t dtor;          // 参数析构函数
     ULOOP_TICK_TYPE expiration; // 截止时间
     bool is_delayed;            // 是否为延时任务
 } task_node_t;
@@ -134,8 +149,10 @@ int uloop_post(uloop_handler_t handler, void *arg)
         return -1;
     }
 
-    node->handler = handler;
+    node->type = NODE_TYPE_TASK;
+    node->act.handler = handler;
     node->arg = arg;
+    node->dtor = NULL;
     node->is_delayed = false;
 
     ULOOP_ENTER_CRITICAL();
@@ -174,8 +191,10 @@ int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks
         return -1;
     }
 
-    node->handler = handler;
+    node->type = NODE_TYPE_TASK;
+    node->act.handler = handler;
     node->arg = arg;
+    node->dtor = NULL;
     node->is_delayed = true;
 
     ULOOP_ENTER_CRITICAL();
@@ -200,38 +219,99 @@ int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks
 }
 
 /**
- * @brief 取消一个延时任务
+ * @brief 从给定链表中移除匹配的任务
+ */
+static int _remove_from_list(task_node_t **head, task_node_t **tail, uloop_handler_t handler, void *arg)
+{
+    int count = 0;
+    ULOOP_ENTER_CRITICAL();
+    task_node_t **curr = head;
+    while (*curr)
+    {
+        task_node_t *entry = *curr;
+        if (entry->type == NODE_TYPE_TASK && entry->act.handler == handler && entry->arg == arg)
+        {
+            *curr = entry->next;
+            if (tail && *tail == entry)
+            {
+                if (head && *head == NULL)
+                    *tail = NULL;
+                else
+                {
+                    task_node_t *temp = *head;
+                    while (temp && temp->next)
+                        temp = temp->next;
+                    *tail = temp;
+                }
+            }
+            if (entry->dtor)
+                entry->dtor(entry->arg);
+            _mem_free(entry);
+            count++;
+        }
+        else
+        {
+            curr = &entry->next;
+        }
+    }
+    ULOOP_EXIT_CRITICAL();
+    return count;
+}
+
+/**
+ * @brief 取消已发布的任务
  *
  * @param handler 回调函数
  * @param arg     回调参数
- * @return int    0: 成功, -1: 未找到
+ * @return int    成功取消的任务数量
  */
-int uloop_cancel_delayed(uloop_handler_t handler, void *arg)
+int uloop_cancel(uloop_handler_t handler, void *arg)
 {
-    task_node_t *node_to_free = NULL;
-    int ret = -1;
+    int count = 0;
+    if (!handler)
+        return 0;
+    count += _remove_from_list(&s_sched.timer_head, NULL, handler, arg);
+    count += _remove_from_list(&s_sched.ready_head, &s_sched.ready_tail, handler, arg);
+    return count;
+}
+
+/**
+ * @brief 发出受管事件
+ *
+ * @param event_id 事件ID
+ * @param arg      事件参数
+ * @param dtor     析构函数
+ */
+void uloop_emit_managed(uint16_t event_id, void *arg, uloop_dtor_t dtor)
+{
+    task_node_t *node = _mem_alloc();
+    if (!node)
+    {
+        // LOG_WARN("Event pool full");
+        if (dtor)
+        {
+            dtor(arg);
+        }
+        return;
+    }
+
+    node->type = NODE_TYPE_EVENT;
+    node->act.event_id = event_id;
+    node->arg = arg;
+    node->dtor = dtor;
+    node->is_delayed = false;
 
     ULOOP_ENTER_CRITICAL();
-    task_node_t **curr = &s_sched.timer_head;
-    while (*curr)
+    if (s_sched.ready_tail)
     {
-        if ((*curr)->handler == handler && (*curr)->arg == arg)
-        {
-            node_to_free = *curr;
-            *curr = node_to_free->next; // 从链表中移除
-            ret = 0;
-            break;
-        }
-        curr = &(*curr)->next;
+        s_sched.ready_tail->next = node;
     }
+    else
+    {
+        s_sched.ready_head = node;
+    }
+    s_sched.ready_tail = node;
     ULOOP_EXIT_CRITICAL();
-
-    if (node_to_free)
-    {
-        _mem_free(node_to_free);
-    }
-
-    return ret;
 }
 
 /**
@@ -242,18 +322,7 @@ int uloop_cancel_delayed(uloop_handler_t handler, void *arg)
  */
 void uloop_emit(uint16_t event_id, void *arg)
 {
-    const uloop_event_entry_t *entry = EVENT_START;
-    while (entry < EVENT_END)
-    {
-        if (entry->event_id == event_id)
-        {
-            if (entry->handler)
-            {
-                entry->handler(arg);
-            }
-        }
-        entry++;
-    }
+    uloop_emit_managed(event_id, arg, NULL);
 }
 
 /**
@@ -294,23 +363,46 @@ ULOOP_TICK_TYPE uloop_run(void)
         }
     }
 
-    // 快照
     task_node_t *task_to_run = s_sched.ready_head;
     s_sched.ready_head = NULL;
     s_sched.ready_tail = NULL;
 
     ULOOP_EXIT_CRITICAL();
 
-    // 执行就绪队列中的任务
+    // 执行就绪队列中的任务和事件
     while (task_to_run)
     {
         task_node_t *curr_node = task_to_run;
         task_to_run = curr_node->next;
 
-        if (curr_node->handler)
+        if (curr_node->type == NODE_TYPE_TASK)
         {
-            curr_node->handler(curr_node->arg);
+            // 处理普通任务
+            if (curr_node->act.handler)
+            {
+                curr_node->act.handler(curr_node->arg);
+            }
         }
+        else if (curr_node->type == NODE_TYPE_EVENT)
+        {
+            // 集中处理事件分发
+            const uloop_event_entry_t *entry = EVENT_START;
+            while (entry < EVENT_END)
+            {
+                if (entry->event_id == curr_node->act.event_id && entry->handler)
+                {
+                    entry->handler(curr_node->arg);
+                }
+                entry++;
+            }
+
+            // 所有订阅者同步执行完毕，安全调用析构清理资源
+            if (curr_node->dtor)
+            {
+                curr_node->dtor(curr_node->arg);
+            }
+        }
+
         _mem_free(curr_node);
     }
 
