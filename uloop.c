@@ -2,8 +2,8 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.3
- * @date 2026-02-25
+ * @version 1.4
+ * @date 2026-02-28
  */
 
 #include "uloop.h"
@@ -51,8 +51,8 @@ static struct
 } s_sched;
 
 // Linker
-extern const uloop_event_entry_t uloop_events$$Base;
-extern const uloop_event_entry_t uloop_events$$Limit;
+extern const uloop_event_entry_t uloop_events$$Base __attribute__((weak));
+extern const uloop_event_entry_t uloop_events$$Limit __attribute__((weak));
 
 #define EVENT_START &uloop_events$$Base
 #define EVENT_END &uloop_events$$Limit
