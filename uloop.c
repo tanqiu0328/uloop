@@ -2,8 +2,8 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.4
- * @date 2026-02-28
+ * @version 1.5
+ * @date 2026-03-12
  */
 
 #include "uloop.h"
@@ -234,15 +234,10 @@ static int _remove_from_list(task_node_t **head, task_node_t **tail, uloop_handl
             *curr = entry->next;
             if (tail && *tail == entry)
             {
-                if (head && *head == NULL)
-                    *tail = NULL;
-                else
-                {
-                    task_node_t *temp = *head;
-                    while (temp && temp->next)
-                        temp = temp->next;
-                    *tail = temp;
-                }
+                task_node_t *temp = *head;
+                while (temp && temp->next)
+                    temp = temp->next;
+                *tail = temp;
             }
             if (entry->dtor)
                 entry->dtor(entry->arg);

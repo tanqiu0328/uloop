@@ -2,8 +2,8 @@
  * @file uloop.h
  * @brief 事件循环库
  * @author Aki
- * @version 1.4
- * @date 2026-02-28
+ * @version 1.5
+ * @date 2026-03-12
  */
 
 #ifndef _ULOOP_H_
