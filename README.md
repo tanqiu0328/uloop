@@ -1,6 +1,6 @@
 # uloop
 
-![version](https://img.shields.io/badge/version-1.4-brightgreen.svg)
+![version](https://img.shields.io/badge/version-1.5-brightgreen.svg)
 ![build](https://img.shields.io/badge/build-2026.02.28-brightgreen.svg)
 ![author](https://img.shields.io/badge/author-Aki-brightgreen.svg)
 
