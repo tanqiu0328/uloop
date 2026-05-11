@@ -2,8 +2,8 @@
  * @file uloop.c
  * @brief 事件循环库
  * @author Aki
- * @version 1.5
- * @date 2026-03-12
+ * @version 1.6
+ * @date 2026-05-11
  */
 
 #include "uloop.h"
@@ -31,7 +31,6 @@ typedef struct task_node
     void *arg;
     uloop_dtor_t dtor;          // 参数析构函数
     ULOOP_TICK_TYPE expiration; // 截止时间
-    bool is_delayed;            // 是否为延时任务
 } task_node_t;
 
 // 内存池管理块
@@ -50,16 +49,31 @@ static struct
     volatile ULOOP_TICK_TYPE tick_count;
 } s_sched;
 
-// Linker
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION)
 extern const uloop_event_entry_t uloop_events$$Base __attribute__((weak));
 extern const uloop_event_entry_t uloop_events$$Limit __attribute__((weak));
 
-#define EVENT_START &uloop_events$$Base
-#define EVENT_END &uloop_events$$Limit
+#define EVENT_START (&uloop_events$$Base)
+#define EVENT_END (&uloop_events$$Limit)
+#elif defined(__GNUC__) && !defined(_WIN32)
+extern const uloop_event_entry_t __start_uloop_events[] __attribute__((weak));
+extern const uloop_event_entry_t __stop_uloop_events[] __attribute__((weak));
+
+#define EVENT_START (__start_uloop_events)
+#define EVENT_END (__stop_uloop_events)
+#else
+#define EVENT_START ((const uloop_event_entry_t *)0)
+#define EVENT_END ((const uloop_event_entry_t *)0)
+#endif
 
 static void _mem_init(void);
 static task_node_t *_mem_alloc(void);
 static void _mem_free(task_node_t *node);
+static bool _mem_is_pool_node(const task_node_t *node);
+static task_node_t *_list_tail(task_node_t *head);
+static void _ready_push_locked(task_node_t *node);
+static void _cleanup_nodes(task_node_t *head);
+static void _dispatch_event(uint16_t event_id, void *arg);
 
 /**
  * @brief 初始化内存池链表
@@ -92,13 +106,26 @@ static task_node_t *_mem_alloc(void)
     return node;
 }
 
+static bool _mem_is_pool_node(const task_node_t *node)
+{
+    for (uint32_t i = 0U; i < ULOOP_POOL_SIZE; i++)
+    {
+        if (node == &s_mem.pool[i])
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * @brief 释放节点回池
  * @param node 节点指针
  */
 static void _mem_free(task_node_t *node)
 {
-    if (!node || node < s_mem.pool || node >= &s_mem.pool[ULOOP_POOL_SIZE])
+    if (!node || !_mem_is_pool_node(node))
     {
         return;
     }
@@ -106,6 +133,72 @@ static void _mem_free(task_node_t *node)
     node->next = s_mem.free_head;
     s_mem.free_head = node;
     ULOOP_EXIT_CRITICAL();
+}
+
+static task_node_t *_list_tail(task_node_t *head)
+{
+    task_node_t *tail = NULL;
+
+    while (head)
+    {
+        tail = head;
+        head = head->next;
+    }
+
+    return tail;
+}
+
+static void _ready_push_locked(task_node_t *node)
+{
+    node->next = NULL;
+
+    if (s_sched.ready_tail)
+    {
+        s_sched.ready_tail->next = node;
+    }
+    else
+    {
+        s_sched.ready_head = node;
+    }
+
+    s_sched.ready_tail = node;
+}
+
+static void _cleanup_nodes(task_node_t *head)
+{
+    while (head)
+    {
+        task_node_t *node = head;
+        head = node->next;
+
+        if (node->dtor)
+        {
+            node->dtor(node->arg);
+        }
+
+        _mem_free(node);
+    }
+}
+
+static void _dispatch_event(uint16_t event_id, void *arg)
+{
+    const uloop_event_entry_t *entry = EVENT_START;
+    const uloop_event_entry_t *end = EVENT_END;
+
+    if (entry == NULL || end == NULL)
+    {
+        return;
+    }
+
+    while (entry < end)
+    {
+        if (entry->event_id == event_id && entry->handler)
+        {
+            entry->handler(arg);
+        }
+
+        entry++;
+    }
 }
 
 /**
@@ -153,18 +246,9 @@ int uloop_post(uloop_handler_t handler, void *arg)
     node->act.handler = handler;
     node->arg = arg;
     node->dtor = NULL;
-    node->is_delayed = false;
 
     ULOOP_ENTER_CRITICAL();
-    if (s_sched.ready_tail)
-    {
-        s_sched.ready_tail->next = node;
-    }
-    else
-    {
-        s_sched.ready_head = node;
-    }
-    s_sched.ready_tail = node;
+    _ready_push_locked(node);
     ULOOP_EXIT_CRITICAL();
 
     return 0;
@@ -195,7 +279,6 @@ int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks
     node->act.handler = handler;
     node->arg = arg;
     node->dtor = NULL;
-    node->is_delayed = true;
 
     ULOOP_ENTER_CRITICAL();
     node->expiration = s_sched.tick_count + ticks;
@@ -221,9 +304,14 @@ int uloop_post_delayed(uloop_handler_t handler, void *arg, ULOOP_TICK_TYPE ticks
 /**
  * @brief 从给定链表中移除匹配的任务
  */
-static int _remove_from_list(task_node_t **head, task_node_t **tail, uloop_handler_t handler, void *arg)
+static int _remove_from_list(task_node_t **head,
+                             task_node_t **tail,
+                             uloop_handler_t handler,
+                             void *arg)
 {
     int count = 0;
+    task_node_t *removed = NULL;
+
     ULOOP_ENTER_CRITICAL();
     task_node_t **curr = head;
     while (*curr)
@@ -232,16 +320,8 @@ static int _remove_from_list(task_node_t **head, task_node_t **tail, uloop_handl
         if (entry->type == NODE_TYPE_TASK && entry->act.handler == handler && entry->arg == arg)
         {
             *curr = entry->next;
-            if (tail && *tail == entry)
-            {
-                task_node_t *temp = *head;
-                while (temp && temp->next)
-                    temp = temp->next;
-                *tail = temp;
-            }
-            if (entry->dtor)
-                entry->dtor(entry->arg);
-            _mem_free(entry);
+            entry->next = removed;
+            removed = entry;
             count++;
         }
         else
@@ -249,7 +329,15 @@ static int _remove_from_list(task_node_t **head, task_node_t **tail, uloop_handl
             curr = &entry->next;
         }
     }
+
+    if (tail)
+    {
+        *tail = _list_tail(*head);
+    }
+
     ULOOP_EXIT_CRITICAL();
+    _cleanup_nodes(removed);
+
     return count;
 }
 
@@ -264,7 +352,10 @@ int uloop_cancel(uloop_handler_t handler, void *arg)
 {
     int count = 0;
     if (!handler)
+    {
         return 0;
+    }
+
     count += _remove_from_list(&s_sched.timer_head, NULL, handler, arg);
     count += _remove_from_list(&s_sched.ready_head, &s_sched.ready_tail, handler, arg);
     return count;
@@ -294,18 +385,9 @@ void uloop_emit_managed(uint16_t event_id, void *arg, uloop_dtor_t dtor)
     node->act.event_id = event_id;
     node->arg = arg;
     node->dtor = dtor;
-    node->is_delayed = false;
 
     ULOOP_ENTER_CRITICAL();
-    if (s_sched.ready_tail)
-    {
-        s_sched.ready_tail->next = node;
-    }
-    else
-    {
-        s_sched.ready_head = node;
-    }
-    s_sched.ready_tail = node;
+    _ready_push_locked(node);
     ULOOP_EXIT_CRITICAL();
 }
 
@@ -340,17 +422,8 @@ ULOOP_TICK_TYPE uloop_run(void)
             s_sched.timer_head = timer_node->next;
 
             timer_node->next = NULL;
-            timer_node->is_delayed = false;
 
-            if (s_sched.ready_tail)
-            {
-                s_sched.ready_tail->next = timer_node;
-            }
-            else
-            {
-                s_sched.ready_head = timer_node;
-            }
-            s_sched.ready_tail = timer_node;
+            _ready_push_locked(timer_node);
         }
         else
         {
@@ -381,15 +454,7 @@ ULOOP_TICK_TYPE uloop_run(void)
         else if (curr_node->type == NODE_TYPE_EVENT)
         {
             // 集中处理事件分发
-            const uloop_event_entry_t *entry = EVENT_START;
-            while (entry < EVENT_END)
-            {
-                if (entry->event_id == curr_node->act.event_id && entry->handler)
-                {
-                    entry->handler(curr_node->arg);
-                }
-                entry++;
-            }
+            _dispatch_event(curr_node->act.event_id, curr_node->arg);
 
             // 所有订阅者同步执行完毕，安全调用析构清理资源
             if (curr_node->dtor)

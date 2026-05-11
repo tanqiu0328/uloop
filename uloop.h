@@ -13,11 +13,33 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifndef ULOOP_POOL_SIZE
 #define ULOOP_POOL_SIZE 32       // 内存池大小
-#define ULOOP_TICK_TYPE uint32_t // Tick类型
+#endif
 
+#if (ULOOP_POOL_SIZE <= 0)
+#error "ULOOP_POOL_SIZE must be greater than 0"
+#endif
+
+#ifndef ULOOP_TICK_TYPE
+#define ULOOP_TICK_TYPE uint32_t // Tick类型
+#endif
+
+#ifndef ULOOP_ENTER_CRITICAL
+#if defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH)
 #define ULOOP_ENTER_CRITICAL() __disable_irq()
+#else
+#define ULOOP_ENTER_CRITICAL() ((void)0)
+#endif
+#endif
+
+#ifndef ULOOP_EXIT_CRITICAL
+#if defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH)
 #define ULOOP_EXIT_CRITICAL() __enable_irq()
+#else
+#define ULOOP_EXIT_CRITICAL() ((void)0)
+#endif
+#endif
 
 /**
  * @brief 任务回调函数类型
@@ -99,7 +121,9 @@ typedef struct
     uloop_handler_t handler;
 } uloop_event_entry_t;
 
+#ifndef ULOOP_SECTION
 #define ULOOP_SECTION __attribute__((section("uloop_events"), used))
+#endif
 
 /**
  * @brief 订阅事件宏
@@ -107,6 +131,8 @@ typedef struct
  * @param func 处理函数
  */
 #define ULOOP_ON_EVENT(id, func) \
-    const uloop_event_entry_t uloop_event_##id##_##func ULOOP_SECTION = {.event_id = id, .handler = func}
+    const uloop_event_entry_t uloop_event_##id##_##func ULOOP_SECTION = { \
+        .event_id = id,                                                   \
+        .handler = func}
 
 #endif // _ULOOP_H_
